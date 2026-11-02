@@ -23,7 +23,7 @@ DB_PATH = os.getenv("DB_PATH", "tank.db")
 API_KEY = os.getenv("API_KEY", "change-me")                       # device -> server
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")          # viewers; empty = open
 # Calibration: measure these once with a tape measure.
-EMPTY_DISTANCE_CM = float(os.getenv("EMPTY_DISTANCE_CM", "200"))  # sensor reading when tank is empty
+EMPTY_DISTANCE_CM = float(os.getenv("EMPTY_DISTANCE_CM", "650"))  # sensor reading when tank is empty
 FULL_DISTANCE_CM = float(os.getenv("FULL_DISTANCE_CM", "25"))     # sensor reading when tank is full
 LOW_LEVEL_PCT = float(os.getenv("LOW_LEVEL_PCT", "20"))
 STALE_HOURS = float(os.getenv("STALE_HOURS", "7"))                # banner if no data for this long (cycle is 3 h)
@@ -184,11 +184,11 @@ DASHBOARD = r"""<!doctype html>
 <style>
 :root{
   --paper:#EAF1F4; --face:#F8FBFC; --ink:#0F2A36; --muted:#52707F; --rule:#CBD9DF; --track:#D3E1E7;
-  --water:#0F7CB8; --warn:#A85F00; --bad:#BE2D3B; --stale:#7D93A0; --batt:#6B4FC0;
+  --water:#0F7CB8; --warn:#A85F00; --bad:#BE2D3B; --stale:#7D93A0;
 }
 @media (prefers-color-scheme: dark){
   :root{ --paper:#071A22; --face:#0C2530; --ink:#E4F1F6; --muted:#8DA8B5; --rule:#1C3945; --track:#18343F;
-         --water:#3FC1EA; --warn:#F2B544; --bad:#F2777F; --stale:#6C8794; --batt:#B4A1F5; }
+         --water:#3FC1EA; --warn:#F2B544; --bad:#F2777F; --stale:#6C8794; }
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -232,8 +232,6 @@ h1{font-size:20px;font-weight:650;margin:0 0 14px;letter-spacing:.2px}
 dt{color:var(--muted);font-size:15px}
 dd{margin:0;font-weight:600;text-align:right}
 dd small{font-weight:500;color:var(--muted);font-size:13px;margin-left:6px}
-.bar{display:inline-block;vertical-align:middle;width:64px;height:8px;border-radius:4px;background:var(--track);margin-left:10px;overflow:hidden}
-.bar i{display:block;height:100%;width:0;background:var(--batt);border-radius:4px;transition:width .8s}
 .sig{display:inline-block;vertical-align:middle;margin-left:8px}
 .sig rect{fill:var(--track)} .sig rect.on{fill:var(--ink)}
 
@@ -274,7 +272,6 @@ th{color:var(--muted);font-weight:500}
 </section>
 
 <dl class="facts">
-  <div id="battrow" hidden><dt>Battery</dt><dd><span id="bv">&ndash;</span><small id="bp"></small><span class="bar" aria-hidden="true"><i id="bbar"></i></span></dd></div>
   <div><dt>Wi-Fi signal</dt><dd><span id="sig">&ndash;</span>
     <svg class="sig" id="bars" width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
       <rect x="0" y="12" width="4" height="4" rx="1"/><rect x="6" y="8" width="4" height="8" rx="1"/>
@@ -290,8 +287,7 @@ th{color:var(--muted);font-weight:500}
     <option value="168">7 days</option><option value="720">30 days</option></select></p>
   <p id="histnote" hidden></p>
   <div class="chart"><h2>Tank level (%)</h2><canvas id="cLevel" aria-label="Tank level over time"></canvas></div>
-  <div class="chart"><h2>Battery (V)</h2><canvas id="cBatt" aria-label="Battery voltage over time"></canvas></div>
-  <table id="tbl"><thead><tr><th>Time</th><th>Level</th><th>Distance</th><th>Battery</th></tr></thead><tbody></tbody></table>
+  <table id="tbl"><thead><tr><th>Time</th><th>Level</th><th>Distance</th></tr></thead><tbody></tbody></table>
 </details>
 </main>
 
@@ -315,17 +311,6 @@ const pt = (deg, r) => { const a = deg * Math.PI / 180; return [CX + r * Math.si
   }
 })();
 
-// resting LiPo voltage -> approximate charge %
-const BT = [[3.27,0],[3.61,5],[3.69,10],[3.71,15],[3.73,20],[3.75,25],[3.77,30],[3.79,35],[3.80,40],[3.82,45],
-            [3.84,50],[3.85,55],[3.87,60],[3.91,65],[3.95,70],[3.98,75],[4.02,80],[4.08,85],[4.11,90],[4.15,95],[4.20,100]];
-function battPct(v){
-  if (v <= BT[0][0]) return 0;
-  for (let i = 1; i < BT.length; i++) if (v <= BT[i][0]) {
-    const [v0,p0] = BT[i-1], [v1,p1] = BT[i];
-    return Math.round(p0 + (p1 - p0) * (v - v0) / (v1 - v0));
-  }
-  return 100;
-}
 const when = ts => {
   const d = new Date(ts * 1000), today = new Date().toDateString() === d.toDateString();
   const t = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
@@ -370,13 +355,6 @@ async function refresh(){
   s.hidden = !stale;
   if (stale) s.textContent = 'No update for ' + ageH.toFixed(1) + ' hours. Check the sensor’s power and Wi-Fi.';
 
-  $('battrow').hidden = !d.battery_v;
-  if (d.battery_v) {
-    const bp = battPct(d.battery_v);
-    $('bv').textContent = d.battery_v.toFixed(2) + ' V';
-    $('bp').textContent = bp + '%' + (bp < 20 ? ', charge soon' : '');
-    $('bbar').style.width = bp + '%';
-  }
   if (d.rssi) showSignal(d.rssi); else $('sig').textContent = '–';
   $('dist').textContent = d.distance_cm.toFixed(1) + ' cm';
 }
@@ -417,17 +395,14 @@ async function history(){
     const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
     rows.slice(-8).reverse().forEach(r => {
       const tr = document.createElement('tr');
-      [when(r.ts), r.level_pct + '%', r.distance_cm.toFixed(1) + ' cm', r.battery_v ? r.battery_v.toFixed(2) + ' V' : '–']
+      [when(r.ts), r.level_pct + '%', r.distance_cm.toFixed(1) + ' cm']
         .forEach(t => { const td = document.createElement('td'); td.textContent = t; tr.appendChild(td); });
       tb.appendChild(tr);
     });
     try {
       await loadLib();
-      const hasBatt = rows.some(r => r.battery_v);
       draw('cLevel', rows, 'level_pct', css('--water'), 0, 100);
-      if (hasBatt) draw('cBatt', rows.filter(r => r.battery_v), 'battery_v', css('--batt'), 3.0, 4.3);
       showCharts(true);
-      $('cBatt').closest('.chart').hidden = !hasBatt;
     } catch (e) { showCharts(false); note.hidden = false; note.textContent = 'Charts couldn’t load. The table below still shows recent readings.'; }
   } catch (e) { note.hidden = false; note.textContent = 'Couldn’t load history.'; }
 }

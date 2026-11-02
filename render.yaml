@@ -12,7 +12,7 @@ services:
       - key: DATABASE_URL       # Postgres connection string from Neon
         sync: false
       - key: EMPTY_DISTANCE_CM
-        value: "600"
+        value: "650"
       - key: FULL_DISTANCE_CM
         value: "25"
       - key: TZ_NAME

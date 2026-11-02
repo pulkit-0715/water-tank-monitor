@@ -61,7 +61,7 @@ float readDistanceMedian() {
   float v[SAMPLES]; int n = 0;
   for (int i = 0; i < SAMPLES; i++) {
     float d = readDistanceOnce();
-    if (d > 20 && d < 650) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
+    if (d > 20 && d < 700) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
     delay(120);
   }
   if (n == 0) return -1;
