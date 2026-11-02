@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: tank-monitor
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: API_KEY            # same value you put in the ESP32 firmware
+        sync: false
+      - key: DASHBOARD_PASSWORD # password your family types to view the dashboard
+        sync: false
+      - key: DATABASE_URL       # Postgres connection string from Neon
+        sync: false
+      - key: EMPTY_DISTANCE_CM
+        value: "200"
+      - key: FULL_DISTANCE_CM
+        value: "25"
+      - key: TZ_NAME
+        value: Asia/Kolkata
