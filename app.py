@@ -173,74 +173,273 @@ def usage(days: int = Query(default=7, ge=1, le=90)):
     return {"unit": "percent of tank per day", "days": per_day}
 
 
-DASHBOARD = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Tank Monitor</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+DASHBOARD = r"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#EAF1F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#071A22" media="(prefers-color-scheme: dark)">
+<title>Water tank</title>
 <style>
- body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#0f172a;color:#e2e8f0}
- .wrap{max-width:900px;margin:auto}
- .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
- .card{background:#1e293b;border-radius:12px;padding:14px}
- .card h3{margin:0 0 6px;font-size:13px;font-weight:500;color:#94a3b8}
- .card .v{font-size:28px;font-weight:600}
- .low{color:#f87171}
- #banner{display:none;background:#7f1d1d;color:#fecaca;padding:10px 14px;border-radius:10px;margin-bottom:12px}
- canvas{background:#1e293b;border-radius:12px;padding:10px;margin-bottom:16px}
- select{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:6px}
-</style></head><body><div class="wrap">
-<h1>Water Tank</h1>
-<div id="banner"></div>
-<div class="cards">
- <div class="card"><h3>Level</h3><div class="v" id="level">-</div></div>
- <div class="card"><h3>Battery</h3><div class="v" id="batt">-</div></div>
- <div class="card"><h3>Signal</h3><div class="v" id="rssi">-</div></div>
- <div class="card"><h3>Last update</h3><div class="v" id="seen" style="font-size:16px">-</div></div>
-</div>
-<p>Range: <select id="range"><option value="24">24 h</option><option value="48" selected>48 h</option><option value="168">7 days</option><option value="720">30 days</option></select></p>
-<canvas id="levelChart" height="120"></canvas>
-<canvas id="battChart" height="80"></canvas>
-</div>
+:root{
+  --paper:#EAF1F4; --face:#F8FBFC; --ink:#0F2A36; --muted:#52707F; --rule:#CBD9DF; --track:#D3E1E7;
+  --water:#0F7CB8; --warn:#A85F00; --bad:#BE2D3B; --stale:#7D93A0; --batt:#6B4FC0;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#071A22; --face:#0C2530; --ink:#E4F1F6; --muted:#8DA8B5; --rule:#1C3945; --track:#18343F;
+         --water:#3FC1EA; --warn:#F2B544; --bad:#F2777F; --stale:#6C8794; --batt:#B4A1F5; }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.45 ui-rounded,"SF Pro Rounded","Avenir Next","Segoe UI",system-ui,sans-serif;
+  padding:max(20px,env(safe-area-inset-top)) 16px max(32px,env(safe-area-inset-bottom));
+  font-variant-numeric:tabular-nums;
+}
+main{max-width:460px;margin:0 auto}
+h1{font-size:20px;font-weight:650;margin:0 0 14px;letter-spacing:.2px}
+
+/* the instrument */
+.face{
+  --c:var(--water);
+  background:var(--face); border-radius:28px; padding:22px 18px 20px; text-align:center;
+  border:1px solid var(--rule);
+}
+.face[data-state=warn]{--c:var(--warn)}
+.face[data-state=bad]{--c:var(--bad)}
+.face[data-state=stale]{--c:var(--stale)}
+.gauge{display:block;width:100%;height:auto;max-width:380px;margin:0 auto}
+.track{fill:none;stroke:var(--track);stroke-width:16;stroke-linecap:round}
+.fill{fill:none;stroke:var(--c);stroke-width:16;stroke-linecap:round;
+      transition:stroke-dasharray 1.1s cubic-bezier(.2,.7,.2,1),stroke .3s}
+.tick{stroke:var(--muted);stroke-width:1.2;opacity:.45}
+.tick.major{stroke-width:2;opacity:.8}
+.num{font-size:52px;font-weight:700;fill:var(--ink)}
+.pct{font-size:22px;font-weight:600;fill:var(--muted)}
+.end{font-size:12px;fill:var(--muted);text-anchor:middle}
+.msg{display:flex;align-items:center;justify-content:center;gap:9px;margin:2px 0 0;font-size:19px;font-weight:600}
+.dot{width:11px;height:11px;border-radius:50%;background:var(--c);flex:none}
+.ago{margin:3px 0 0;color:var(--muted);font-size:14px}
+#stale{margin:12px 0 0;padding:10px 12px;border-radius:12px;background:var(--bad);color:#fff;font-size:14px;text-align:left}
+@media (prefers-color-scheme: dark){ #stale{color:#1A0B0E} }
+
+/* quiet facts, separated by rules instead of cards */
+.facts{margin:22px 4px 0;padding:0}
+.facts>div{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;border-top:1px solid var(--rule)}
+.facts>div:last-child{border-bottom:1px solid var(--rule)}
+dt{color:var(--muted);font-size:15px}
+dd{margin:0;font-weight:600;text-align:right}
+dd small{font-weight:500;color:var(--muted);font-size:13px;margin-left:6px}
+.bar{display:inline-block;vertical-align:middle;width:64px;height:8px;border-radius:4px;background:var(--track);margin-left:10px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--batt);border-radius:4px;transition:width .8s}
+.sig{display:inline-block;vertical-align:middle;margin-left:8px}
+.sig rect{fill:var(--track)} .sig rect.on{fill:var(--ink)}
+
+/* history, tucked away */
+details{margin:22px 4px 0}
+summary{cursor:pointer;font-weight:600;padding:8px 0;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"Show";float:right;color:var(--muted);font-weight:500;font-size:14px}
+details[open] summary::after{content:"Hide"}
+summary:focus-visible,select:focus-visible{outline:2px solid var(--water);outline-offset:3px;border-radius:6px}
+.range{margin:6px 0 10px;color:var(--muted);font-size:14px}
+select{font:inherit;font-size:14px;color:var(--ink);background:var(--face);border:1px solid var(--rule);border-radius:8px;padding:5px 8px}
+.chart{background:var(--face);border:1px solid var(--rule);border-radius:16px;padding:12px 12px 6px;margin:0 0 12px}
+.chart h2{font-size:14px;font-weight:600;color:var(--muted);margin:0 0 6px}
+.chart canvas{width:100%!important;height:190px!important}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px}
+th,td{padding:7px 4px;text-align:right;border-bottom:1px solid var(--rule)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500}
+#histnote{color:var(--muted);font-size:14px}
+@media (prefers-reduced-motion: reduce){ .fill,.bar i{transition:none} }
+</style></head>
+<body><main>
+<h1>Water tank</h1>
+
+<section class="face" id="face" data-state="stale">
+  <svg class="gauge" id="gauge" viewBox="0 0 240 196" role="img" aria-label="Tank level: no reading yet">
+    <path class="track" d="M 40.33 164 A 92 92 0 1 1 199.67 164" pathLength="100"/>
+    <path class="fill" id="fill" d="M 40.33 164 A 92 92 0 1 1 199.67 164" pathLength="100" stroke-dasharray="0 100"/>
+    <g id="ticks"></g>
+    <text x="120" y="132" text-anchor="middle"><tspan class="num" id="num">&ndash;</tspan><tspan class="pct" dx="3">%</tspan></text>
+    <text class="end" x="40" y="188">Empty</text>
+    <text class="end" x="200" y="188">Full</text>
+  </svg>
+  <p class="msg" id="msgrow"><span class="dot"></span><span id="msg">Waiting for the first reading</span></p>
+  <p class="ago" id="ago"></p>
+  <p id="stale" role="status" hidden></p>
+</section>
+
+<dl class="facts">
+  <div id="battrow" hidden><dt>Battery</dt><dd><span id="bv">&ndash;</span><small id="bp"></small><span class="bar" aria-hidden="true"><i id="bbar"></i></span></dd></div>
+  <div><dt>Wi-Fi signal</dt><dd><span id="sig">&ndash;</span>
+    <svg class="sig" id="bars" width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+      <rect x="0" y="12" width="4" height="4" rx="1"/><rect x="6" y="8" width="4" height="8" rx="1"/>
+      <rect x="12" y="4" width="4" height="12" rx="1"/><rect x="18" y="0" width="4" height="16" rx="1"/>
+    </svg></dd></div>
+  <div><dt>Sensor to water</dt><dd><span id="dist">&ndash;</span></dd></div>
+</dl>
+
+<details id="hist">
+  <summary>History</summary>
+  <p class="range">Show the last <select id="range" aria-label="History range">
+    <option value="24">24 hours</option><option value="48" selected>2 days</option>
+    <option value="168">7 days</option><option value="720">30 days</option></select></p>
+  <p id="histnote" hidden></p>
+  <div class="chart"><h2>Tank level (%)</h2><canvas id="cLevel" aria-label="Tank level over time"></canvas></div>
+  <div class="chart"><h2>Battery (V)</h2><canvas id="cBatt" aria-label="Battery voltage over time"></canvas></div>
+  <table id="tbl"><thead><tr><th>Time</th><th>Level</th><th>Distance</th><th>Battery</th></tr></thead><tbody></tbody></table>
+</details>
+</main>
+
 <script>
-const STALE_H = __STALE_H__;
-let lc, bc;
-const fmt = ts => new Date(ts*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-function mk(id, label, color, ymin, ymax){
-  return new Chart(document.getElementById(id), {type:'line',
-    data:{labels:[],datasets:[{label,data:[],borderColor:color,tension:.25,pointRadius:2}]},
-    options:{scales:{y:{min:ymin,max:ymax},x:{ticks:{maxTicksLimit:8}}},plugins:{legend:{labels:{color:'#e2e8f0'}}}}});
-}
-async function load(){
-  const hrs = document.getElementById('range').value;
-  const rows = await (await fetch('/api/readings?hours='+hrs)).json();
-  const labels = rows.map(r=>fmt(r.ts));
-  lc.data.labels = labels; lc.data.datasets[0].data = rows.map(r=>r.level_pct); lc.update();
-  bc.data.labels = labels; bc.data.datasets[0].data = rows.map(r=>r.battery_v); bc.update();
-  let latest = null;
-  try { const lr = await fetch('/api/latest'); if (lr.ok) latest = await lr.json(); } catch(e) {}
-  const banner = document.getElementById('banner');
-  if (!latest) {
-    banner.style.display = 'block'; banner.textContent = 'No readings received yet.';
-    return;
+const STALE_H = __STALE_H__, LOW = __LOW_PCT__;
+const $ = id => document.getElementById(id);
+const CX = 120, CY = 118;
+const pt = (deg, r) => { const a = deg * Math.PI / 180; return [CX + r * Math.sin(a), CY - r * Math.cos(a)]; };
+
+// tick marks every 5% along the 240-degree sweep, long ones at 0/25/50/75/100
+(function ticks(){
+  const g = $('ticks'), NS = 'http://www.w3.org/2000/svg';
+  for (let i = 0; i <= 20; i++) {
+    const deg = -120 + 240 * i / 20, major = i % 5 === 0;
+    const [x1, y1] = pt(deg, 77), [x2, y2] = pt(deg, major ? 63 : 70);
+    const l = document.createElementNS(NS, 'line');
+    l.setAttribute('x1', x1.toFixed(1)); l.setAttribute('y1', y1.toFixed(1));
+    l.setAttribute('x2', x2.toFixed(1)); l.setAttribute('y2', y2.toFixed(1));
+    l.setAttribute('class', major ? 'tick major' : 'tick');
+    g.appendChild(l);
   }
-  const ageH = (Date.now()/1000 - latest.ts) / 3600;
-  if (ageH > STALE_H) {
-    banner.style.display = 'block';
-    banner.textContent = 'No data for ' + ageH.toFixed(1) + ' hours. Check the tank node power and Wi-Fi.';
-  } else { banner.style.display = 'none'; }
-  const lv = document.getElementById('level');
-  lv.textContent = latest.level_pct+'%'; lv.className = 'v'+(latest.level_pct<20?' low':'');
-  document.getElementById('batt').textContent = latest.battery_v ? latest.battery_v.toFixed(2)+' V' : '-';
-  document.getElementById('rssi').textContent = latest.rssi ? latest.rssi+' dBm' : '-';
-  document.getElementById('seen').textContent = fmt(latest.ts);
+})();
+
+// resting LiPo voltage -> approximate charge %
+const BT = [[3.27,0],[3.61,5],[3.69,10],[3.71,15],[3.73,20],[3.75,25],[3.77,30],[3.79,35],[3.80,40],[3.82,45],
+            [3.84,50],[3.85,55],[3.87,60],[3.91,65],[3.95,70],[3.98,75],[4.02,80],[4.08,85],[4.11,90],[4.15,95],[4.20,100]];
+function battPct(v){
+  if (v <= BT[0][0]) return 0;
+  for (let i = 1; i < BT.length; i++) if (v <= BT[i][0]) {
+    const [v0,p0] = BT[i-1], [v1,p1] = BT[i];
+    return Math.round(p0 + (p1 - p0) * (v - v0) / (v1 - v0));
+  }
+  return 100;
 }
-lc = mk('levelChart','Level %','#38bdf8',0,100);
-bc = mk('battChart','Battery V','#facc15',3.0,4.3);
-document.getElementById('range').onchange = load;
-load(); setInterval(load, 60000);
+const when = ts => {
+  const d = new Date(ts * 1000), today = new Date().toDateString() === d.toDateString();
+  const t = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  return today ? 'today ' + t : d.toLocaleDateString([], {day:'numeric', month:'short'}) + ', ' + t;
+};
+function ago(ts){
+  const m = Math.round((Date.now()/1000 - ts) / 60);
+  if (m < 2) return 'just now';
+  if (m < 60) return m + ' min ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' h ' + (m % 60) + ' min ago';
+  return Math.floor(h / 24) + ' days ago';
+}
+function words(p){
+  if (p >= 85) return 'Nearly full';
+  if (p >= 50) return 'Plenty of water';
+  if (p >= LOW) return 'Getting low';
+  return 'Running low, refill soon';
+}
+function showSignal(r){
+  const lvl = r >= -55 ? 4 : r >= -67 ? 3 : r >= -78 ? 2 : 1;
+  const name = lvl === 4 ? 'Strong' : lvl === 3 ? 'Good' : lvl === 2 ? 'Fair' : 'Weak';
+  $('sig').textContent = name + ' (' + r + ' dBm)';
+  [...$('bars').children].forEach((b, i) => b.classList.toggle('on', i < lvl));
+}
+
+async function refresh(){
+  let d = null;
+  try { const r = await fetch('/api/latest', {cache:'no-store'}); if (r.ok) d = await r.json(); }
+  catch (e) { $('ago').textContent = 'Can’t reach the server right now'; return; }
+  const face = $('face');
+  if (!d) { face.dataset.state = 'stale'; $('msg').textContent = 'Waiting for the first reading'; return; }
+
+  const ageH = (Date.now()/1000 - d.ts) / 3600, stale = ageH > STALE_H, p = d.level_pct;
+  face.dataset.state = stale ? 'stale' : p >= 50 ? 'ok' : p >= LOW ? 'warn' : 'bad';
+  $('num').textContent = Math.round(p);
+  $('fill').style.strokeDasharray = Math.max(p, 0.01) + ' 100';
+  $('msg').textContent = stale ? 'Last known level' : words(p);
+  $('ago').textContent = 'Updated ' + ago(d.ts);
+  $('gauge').setAttribute('aria-label', 'Tank level ' + Math.round(p) + ' percent. ' + words(p));
+  const s = $('stale');
+  s.hidden = !stale;
+  if (stale) s.textContent = 'No update for ' + ageH.toFixed(1) + ' hours. Check the sensor’s power and Wi-Fi.';
+
+  $('battrow').hidden = !d.battery_v;
+  if (d.battery_v) {
+    const bp = battPct(d.battery_v);
+    $('bv').textContent = d.battery_v.toFixed(2) + ' V';
+    $('bp').textContent = bp + '%' + (bp < 20 ? ', charge soon' : '');
+    $('bbar').style.width = bp + '%';
+  }
+  if (d.rssi) showSignal(d.rssi); else $('sig').textContent = '–';
+  $('dist').textContent = d.distance_cm.toFixed(1) + ' cm';
+}
+
+// ---- history (Chart.js is loaded only when this section is opened) ----
+let charts = {}, libPromise = null;
+function loadLib(){
+  if (window.Chart) return Promise.resolve();
+  if (!libPromise) libPromise = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js';
+    s.onload = res; s.onerror = () => { libPromise = null; rej(); };
+    document.head.appendChild(s);
+  });
+  return libPromise;
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw(id, rows, key, color, ymin, ymax){
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), {
+    type: 'line',
+    data: { labels: rows.map(r => when(r.ts)),
+            datasets: [{ data: rows.map(r => r[key]), borderColor: color, borderWidth: 2, tension: .3,
+                         pointRadius: rows.length > 80 ? 0 : 2.5, pointHoverRadius: 5, spanGaps: true }] },
+    options: { maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false } },
+      scales: { y: { min: ymin, max: ymax, grid: { color: css('--rule') }, ticks: { color: css('--muted') } },
+                x: { grid: { display: false }, ticks: { color: css('--muted'), maxTicksLimit: 5, maxRotation: 0 } } } }
+  });
+}
+const showCharts = on => document.querySelectorAll('.chart').forEach(c => { c.hidden = !on; });
+async function history(){
+  const note = $('histnote');
+  try {
+    const rows = await (await fetch('/api/readings?hours=' + $('range').value, {cache:'no-store'})).json();
+    note.hidden = rows.length > 0; note.textContent = 'No readings in this period yet.';
+    const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
+    rows.slice(-8).reverse().forEach(r => {
+      const tr = document.createElement('tr');
+      [when(r.ts), r.level_pct + '%', r.distance_cm.toFixed(1) + ' cm', r.battery_v ? r.battery_v.toFixed(2) + ' V' : '–']
+        .forEach(t => { const td = document.createElement('td'); td.textContent = t; tr.appendChild(td); });
+      tb.appendChild(tr);
+    });
+    try {
+      await loadLib();
+      const hasBatt = rows.some(r => r.battery_v);
+      draw('cLevel', rows, 'level_pct', css('--water'), 0, 100);
+      if (hasBatt) draw('cBatt', rows.filter(r => r.battery_v), 'battery_v', css('--batt'), 3.0, 4.3);
+      showCharts(true);
+      $('cBatt').closest('.chart').hidden = !hasBatt;
+    } catch (e) { showCharts(false); note.hidden = false; note.textContent = 'Charts couldn’t load. The table below still shows recent readings.'; }
+  } catch (e) { note.hidden = false; note.textContent = 'Couldn’t load history.'; }
+}
+$('hist').addEventListener('toggle', () => { if ($('hist').open) history(); });
+$('range').addEventListener('change', history);
+
+refresh();
+setInterval(() => { refresh(); if ($('hist').open) history(); }, 60000);
 </script></body></html>"""
 
 
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_viewer)])
 def dashboard():
-    return DASHBOARD.replace("__STALE_H__", str(STALE_HOURS))
+    return (DASHBOARD.replace("__STALE_H__", str(STALE_HOURS))
+                     .replace("__LOW_PCT__", str(LOW_LEVEL_PCT)))

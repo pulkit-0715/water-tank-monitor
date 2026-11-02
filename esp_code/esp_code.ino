@@ -1,22 +1,43 @@
-// ESP32-C3 SuperMini water tank node:
-// measure -> buffer -> POST to backend (retry, patient with slow cloud wake-ups) -> deep sleep 3 h.
-// Edit the CONFIG block, then flash with Arduino IDE (board: ESP32C3 Dev Module, USB CDC On Boot: Enabled).
+// ESP32-C3 SuperMini water tank node (final): power sensor -> measure -> POST to server -> deep sleep.
+// Board: ESP32C3 Dev Module, USB CDC On Boot: Enabled.
+// TEST_MODE = true  -> never deep sleeps (Serial Monitor stays alive), repeats every SLEEP_SECONDS.
+// TEST_MODE = false -> real use: deep sleep between readings. (USB serial disconnects while asleep.)
 #include <WiFi.h>
+#include <string.h>
+#include <time.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
 // ---------- CONFIG ----------
-const char* WIFI_SSID = "YOUR_WIFI";
-const char* WIFI_PASS = "YOUR_PASSWORD";
-const char* SERVER_URL = "https://YOUR-APP.onrender.com/api/readings";  // local test: http://192.168.x.x:8000/api/readings
-const char* API_KEY = "change-me";                                      // must match server API_KEY
-const int TRIG_PIN = 2;
-const int ECHO_PIN = 3;
-const int BATT_ADC_PIN = -1;      // set to your ADC pin if you wired a voltage divider, else -1
-const float BATT_DIVIDER = 2.0;   // (R1+R2)/R2 of your divider
-const uint32_t SLEEP_SECONDS = 3UL * 3600UL;   // use 60 while testing
+// Wi-Fi name/password and API key live in secrets.h (not committed to Git). Copy secrets.example.h to secrets.h and fill it in.
+#include "secrets.h"
+const char* SERVER_URL = "https://tank-monitor-kdc9.onrender.com/api/readings";
+// TLS certificate check. Paste the PEM of your server's CA certificate between the quotes (see README, "TLS").
+// Left empty, the node still encrypts traffic but does NOT verify the server (prints a warning).
+const char* ROOT_CA = R"PEM(
+-----BEGIN CERTIFICATE-----
+MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD
+VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG
+A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw
+WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz
+IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi
+AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi
+QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR
+HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW
+BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D
+9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8
+p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
+-----END CERTIFICATE-----
+)PEM";
+const int TRIG_PIN = 5;            // sensor RX (Trig) <- GPIO5
+const int ECHO_PIN = 4;            // sensor TX (Echo) -> GPIO4
+const int SENSOR_POWER_PIN = 6;    // GPIO6 -> 1k -> 2N2222 base; HIGH = sensor ON
+const uint32_t SLEEP_SECONDS = 60;             // TESTING. For real use change to 3UL * 3600UL (every 3 hours)
 const int SAMPLES = 7;
+const uint32_t TRIG_PULSE_US = 130;   // trigger pulse width in microseconds (130 gave stable readings)
 const uint32_t HTTP_TIMEOUT_MS = 75000;        // free cloud servers can take ~1 min to wake up
+const uint32_t SENSOR_WARMUP_MS = 1000;
+const bool TEST_MODE = true;                   // true = Serial Monitor stays alive; set false for real use (deep sleep)
 // ----------------------------
 
 #define MAX_PENDING 8
@@ -24,12 +45,11 @@ const uint32_t HTTP_TIMEOUT_MS = 75000;        // free cloud servers can take ~1
 RTC_DATA_ATTR uint32_t wakeCount = 0;
 RTC_DATA_ATTR int pendingCount = 0;
 RTC_DATA_ATTR float pendDist[MAX_PENDING];
-RTC_DATA_ATTR float pendBatt[MAX_PENDING];
 RTC_DATA_ATTR uint32_t pendWake[MAX_PENDING];
 
 float readDistanceOnce() {
   digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(5);
-  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(15);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(TRIG_PULSE_US);
   digitalWrite(TRIG_PIN, LOW);
   unsigned long us = pulseIn(ECHO_PIN, HIGH, 40000UL);  // 40 ms timeout
   if (us == 0) return -1;
@@ -41,7 +61,7 @@ float readDistanceMedian() {
   float v[SAMPLES]; int n = 0;
   for (int i = 0; i < SAMPLES; i++) {
     float d = readDistanceOnce();
-    if (d > 20 && d < 600) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
+    if (d > 20 && d < 650) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
     delay(120);
   }
   if (n == 0) return -1;
@@ -51,37 +71,59 @@ float readDistanceMedian() {
   return v[n / 2];
 }
 
-float readBatteryV() {
-  if (BATT_ADC_PIN < 0) return -1;
-  uint32_t mv = analogReadMilliVolts(BATT_ADC_PIN);
-  return mv * BATT_DIVIDER / 1000.0f;
+void sensorPower(bool on) {
+  digitalWrite(SENSOR_POWER_PIN, on ? HIGH : LOW);
 }
 
-void savePending(float dist, float batt) {
+bool connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WiFi.disconnect(true);               // cancel any attempt still in progress
+  delay(300);
+  WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);  // fixes connection failures on many ESP32-C3 SuperMini boards
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(250);
+  Serial.printf("WiFi status: %d (3 = connected), RSSI: %d dBm\n", WiFi.status(), WiFi.RSSI());
+  return WiFi.status() == WL_CONNECTED;
+}
+
+void savePending(float dist) {
   if (pendingCount == MAX_PENDING) {  // buffer full: drop the oldest
     for (int i = 1; i < MAX_PENDING; i++) {
-      pendDist[i - 1] = pendDist[i]; pendBatt[i - 1] = pendBatt[i]; pendWake[i - 1] = pendWake[i];
+      pendDist[i - 1] = pendDist[i]; pendWake[i - 1] = pendWake[i];
     }
     pendingCount--;
   }
   pendDist[pendingCount] = dist;
-  pendBatt[pendingCount] = batt;
   pendWake[pendingCount] = wakeCount;
   pendingCount++;
 }
 
-bool postReading(float dist, float batt, uint32_t ageSeconds) {
+bool haveCA() { return strstr(ROOT_CA, "BEGIN CERTIFICATE") != nullptr; }
+
+// Certificate checks need the real date (the ESP32 forgets it in deep sleep).
+bool syncTime() {
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  unsigned long t0 = millis();
+  while (time(nullptr) < 1700000000 && millis() - t0 < 15000) delay(200);
+  bool ok = time(nullptr) >= 1700000000;
+  Serial.printf("Time sync: %s\n", ok ? "ok" : "FAILED");
+  return ok;
+}
+
+bool postReading(float dist, uint32_t ageSeconds) {
   WiFiClientSecure secure;
-  secure.setInsecure();  // fine for a hobby project; pin the cert later for extra points
+  if (haveCA()) secure.setCACert(ROOT_CA);   // verify the server's certificate
+  else secure.setInsecure();                 // encrypted but unverified (set ROOT_CA to fix)
   HTTPClient http;
   bool https = String(SERVER_URL).startsWith("https");
   if (https) http.begin(secure, SERVER_URL); else http.begin(SERVER_URL);
-  http.setConnectTimeout(15000);
+  http.setConnectTimeout(30000);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key", API_KEY);
   String body = "{\"distance_cm\":" + String(dist, 1) + ",\"rssi\":" + String(WiFi.RSSI());
-  if (batt > 0) body += ",\"battery_v\":" + String(batt, 2);
   if (ageSeconds > 0) body += ",\"age_s\":" + String(ageSeconds);
   body += "}";
   int code = http.POST(body);
@@ -91,6 +133,7 @@ bool postReading(float dist, float batt, uint32_t ageSeconds) {
 }
 
 void goToSleep(uint32_t seconds) {
+  sensorPower(false);
   WiFi.disconnect(true);
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
   esp_deep_sleep_start();
@@ -98,42 +141,54 @@ void goToSleep(uint32_t seconds) {
 
 void setup() {
   Serial.begin(115200);
-  wakeCount++;
+  delay(TEST_MODE ? 2000 : 300);   // lets a Serial Monitor connect in test mode
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-
-  float dist = readDistanceMedian();
-  float batt = readBatteryV();
-  Serial.printf("distance=%.1f cm, battery=%.2f V\n", dist, batt);
-  if (dist > 0) savePending(dist, batt);
-
-  if (pendingCount > 0) {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(200);
-
-    if (WiFi.status() == WL_CONNECTED) {
-      int sent = 0;
-      while (sent < pendingCount) {  // oldest first
-        uint32_t age = (wakeCount - pendWake[sent]) * SLEEP_SECONDS;
-        bool ok = false;
-        for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-          ok = postReading(pendDist[sent], pendBatt[sent], age);
-          if (!ok) delay(2000);
-        }
-        if (!ok) break;  // server unreachable: keep the rest for next wake
-        sent++;
-      }
-      for (int i = sent; i < pendingCount; i++) {  // drop what was sent, shift the rest down
-        pendDist[i - sent] = pendDist[i]; pendBatt[i - sent] = pendBatt[i]; pendWake[i - sent] = pendWake[i];
-      }
-      pendingCount -= sent;
-    } else {
-      Serial.println("Wi-Fi not connected; keeping readings for next wake");
-    }
-  }
-  goToSleep(SLEEP_SECONDS);  // always sleep, even on failure, to protect the battery
+  pinMode(SENSOR_POWER_PIN, OUTPUT);
+  sensorPower(false);
+  Serial.println("Tank node started");
 }
 
-void loop() {}
+void runCycle() {
+  wakeCount++;
+
+  sensorPower(true);                 // switch the sensor ON through the transistor
+  delay(SENSOR_WARMUP_MS);
+  float dist = readDistanceMedian();
+  sensorPower(false);                // and OFF again to save battery
+  Serial.printf("distance=%.1f cm\n", dist);
+  if (dist > 0) savePending(dist);
+
+  if (pendingCount > 0 && connectWiFi()) {
+    if (!haveCA()) Serial.println("WARNING: ROOT_CA empty, server certificate is NOT verified");
+    else if (!syncTime()) {   // cannot verify without the date: keep readings for the next wake
+      Serial.println("No time, keeping readings for next time");
+      if (!TEST_MODE) goToSleep(SLEEP_SECONDS);
+      return;
+    }
+    int sent = 0;
+    while (sent < pendingCount) {  // oldest first
+      uint32_t age = (wakeCount - pendWake[sent]) * SLEEP_SECONDS;
+      bool ok = false;
+      for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        ok = postReading(pendDist[sent], age);
+        if (!ok) delay(2000);
+      }
+      if (!ok) break;  // server unreachable: keep the rest for next time
+      sent++;
+    }
+    for (int i = sent; i < pendingCount; i++) {  // drop what was sent, shift the rest down
+      pendDist[i - sent] = pendDist[i]; pendWake[i - sent] = pendWake[i];
+    }
+    pendingCount -= sent;
+  } else if (pendingCount > 0) {
+    Serial.println("Wi-Fi not connected; keeping readings for next time");
+  }
+
+  if (!TEST_MODE) goToSleep(SLEEP_SECONDS);  // real use: always sleep, even on failure
+}
+
+void loop() {
+  runCycle();
+  delay(SLEEP_SECONDS * 1000UL);   // only reached in test mode
+}
