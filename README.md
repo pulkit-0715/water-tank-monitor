@@ -72,8 +72,8 @@ Dockerfile, requirements.txt
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export API_KEY="pick-a-long-random-string"
-export EMPTY_DISTANCE_CM=650   # sensor reading with empty tank
-export FULL_DISTANCE_CM=25     # sensor reading with full tank
+export EMPTY_DISTANCE_CM=230   # sensor reading with empty tank
+export FULL_DISTANCE_CM=30     # sensor reading with full tank
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 

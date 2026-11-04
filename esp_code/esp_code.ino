@@ -32,12 +32,12 @@ p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
 const int TRIG_PIN = 5;            // sensor RX (Trig) <- GPIO5
 const int ECHO_PIN = 4;            // sensor TX (Echo) -> GPIO4
 const int SENSOR_POWER_PIN = 6;    // GPIO6 -> 1k -> 2N2222 base; HIGH = sensor ON
-const uint32_t SLEEP_SECONDS = 60;             // TESTING. For real use change to 3UL * 3600UL (every 3 hours)
+const uint32_t SLEEP_SECONDS =3UL * 3600UL ;
 const int SAMPLES = 7;
 const uint32_t TRIG_PULSE_US = 130;   // trigger pulse width in microseconds (130 gave stable readings)
 const uint32_t HTTP_TIMEOUT_MS = 75000;        // free cloud servers can take ~1 min to wake up
 const uint32_t SENSOR_WARMUP_MS = 1000;
-const bool TEST_MODE = true;                   // true = Serial Monitor stays alive; set false for real use (deep sleep)
+const bool TEST_MODE = false;                   // true = Serial Monitor stays alive; set false for real use (deep sleep)
 // ----------------------------
 
 #define MAX_PENDING 8
@@ -61,7 +61,7 @@ float readDistanceMedian() {
   float v[SAMPLES]; int n = 0;
   for (int i = 0; i < SAMPLES; i++) {
     float d = readDistanceOnce();
-    if (d > 20 && d < 700) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
+    if (d > 20 && d < 250) v[n++] = d;   // SR04M-2 has ~20 cm dead zone
     delay(120);
   }
   if (n == 0) return -1;

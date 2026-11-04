@@ -23,8 +23,8 @@ DB_PATH = os.getenv("DB_PATH", "tank.db")
 API_KEY = os.getenv("API_KEY", "change-me")                       # device -> server
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")          # viewers; empty = open
 # Calibration: measure these once with a tape measure.
-EMPTY_DISTANCE_CM = float(os.getenv("EMPTY_DISTANCE_CM", "650"))  # sensor reading when tank is empty
-FULL_DISTANCE_CM = float(os.getenv("FULL_DISTANCE_CM", "25"))     # sensor reading when tank is full
+EMPTY_DISTANCE_CM = float(os.getenv("EMPTY_DISTANCE_CM", "230"))  # sensor reading when tank is empty
+FULL_DISTANCE_CM = float(os.getenv("FULL_DISTANCE_CM", "30"))     # sensor reading when tank is full
 LOW_LEVEL_PCT = float(os.getenv("LOW_LEVEL_PCT", "20"))
 STALE_HOURS = float(os.getenv("STALE_HOURS", "7"))                # banner if no data for this long (cycle is 3 h)
 TZ = ZoneInfo(os.getenv("TZ_NAME", "Asia/Kolkata"))

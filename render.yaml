@@ -12,8 +12,8 @@ services:
       - key: DATABASE_URL       # Postgres connection string from Neon
         sync: false
       - key: EMPTY_DISTANCE_CM
-        value: "650"
+        value: "230"
       - key: FULL_DISTANCE_CM
-        value: "25"
+        value: "30"
       - key: TZ_NAME
         value: Asia/Kolkata
