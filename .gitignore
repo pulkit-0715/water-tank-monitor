@@ -4,3 +4,4 @@ __pycache__/
 .env
 esp_code/secrets.h
 .DS_Store
+.DS_Store
